@@ -65,6 +65,58 @@ jobs:
   deploy:
     needs: [lint-and-test, build-and-push]
     runs-on: ubuntu-latest
+    name: deploy
+    permissions:
+      id-token: write
+      contents: read
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - uses: actions/checkout@v3
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: us-east-1
+      - name: Deploy new image
+        id: ssm_command 
+        run: |
+          SECRET_NAME=${{  vars.GITHUB_SECRET_NAME}}
+          REGION=${{ vars.AWS_REGION }}
+          IMAGE_URI=${{ steps.build-and-push.outputs.image }}
+          CONTAINER_NAME=${{ vars.CONTAINER_NAME }}
+          
+          COMMAND_TO_RUN="
+            GHCR_PAT_TOKEN=\$(aws secretsmanager get-secret-value --secret-id ${SECRET_NAME} --region ${SECRET_REGION} --query SecretString --output text)
+            if [ -z \"\$GHCR_PAT_TOKEN\" ]; then
+              echo 'ERROR: Failed to retrieve GHCR token from Secrets Manager'
+              exit 1
+            fi
+          
+            # Log in to GHCR using the retrieved token
+            echo \$GHCR_PAT_TOKEN | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            docker stop ${CONTAINER_NAME} || true
+            docker rm ${CONTAINER_NAME} || true
+            docker pull ${IMAGE_URI}
+            docker run -d --name ${CONTAINER_NAME} --restart always -p 80:3000 ${IMAGE_URI}
+          "
+
+          COMMAND_ID=$(aws ssm send-command \
+            --targets "Key=tag:TargetSSM,Values=true" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands='$COMMAND_TO_RUN'" \
+            --comment "Command from GitHub Action: ${{ github.run_id }}" \
+            --query "Command.CommandId" \
+            --output text)
+
+          # Store the Command ID for the next step
+          echo "command_id=$COMMAND_ID" >> $GITHUB_OUTPUT
+          echo "SSM Command sent with ID: $COMMAND_ID"
+      - name: Check SSM Command Status and Output
+        run: |
+          # Wait a few seconds for the command to complete
+          echo "Waiting for command to complete..."
+          sleep 10
+
+          # Get the command invocation details
+          aws ssm get-command-invocation \
+            --command-id "${{ steps.ssm_command.outputs.command_id }}" \
+            --targets "Key=tag:TargetSSM,Values=true"
