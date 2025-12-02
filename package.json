@@ -19,7 +19,7 @@
   },
   "homepage": "https://github.com/lisazevedo/hello-world-node#readme",
   "dependencies": {
-    "express": "^5.1.0"
+    "express": "^5.2.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",
